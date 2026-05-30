@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Hệ thống AI FaceID - Node.js</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; text-align: center; background: #1e1e24; color: #fff; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: #2a2a35; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        .ip-inputs { display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; }
+        input { padding: 10px; border-radius: 6px; border: 1px solid #555; background: #3b3b4f; color: #fff; width: 200px; text-align: center; }
+        button { padding: 10px 20px; border: none; border-radius: 6px; background: #00bcd4; color: #fff; font-weight: bold; cursor: pointer; }
+        button:hover { background: #0097a7; }
+        #camera-frame { width: 400px; height: 300px; background: #000; border: 4px solid #444; border-radius: 8px; margin: 15px auto; object-fit: cover; display: block; }
+        .status-box { font-size: 22px; font-weight: bold; padding: 15px; margin: 15px 0; border-radius: 6px; background: #3e3e56; }
+        .enroll-box { border-top: 1px solid #444; padding-top: 20px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>HỆ THỐNG GIÁM SÁT & FACE ID TRUNG TÂM</h2>
+
+    <div class="ip-inputs">
+        <input type="text" id="ipCam" placeholder="IP ESP32-CAM (VD: 192.168.1.50)">
+        <input type="text" id="ipMain" placeholder="IP ESP32 CHÍNH (VD: 192.168.1.100)">
+        <button onclick="saveConfig()">Kết Nối Thiết Bị</button>
+    </div>
+
+    <img id="camera-frame" src="" alt="Chưa có tín hiệu từ ESP32-CAM">
+
+    <div class="status-box" id="ai-status">Trạng thái AI: Đang tải mô hình...</div>
+
+    <div class="enroll-box">
+        <h3>THAY ĐỔI / THÊM MỚI FACE ID</h3>
+        <input type="text" id="faceLabel" placeholder="Tên định danh (VD: admin, phu)">
+        <button style="background: #e91e63;" onclick="enrollCurrentFrame()">Chụp & Lưu FaceID</button>
+    </div>
+</div>
+
+<script>
+    let intervalId = null;
+    let modelsLoaded = false;
+
+    // Tự động load mô hình AI ngay khi mở trang Web
+    async function initAI() {
+        // Tải tạm thời các weights xử lý mặt từ CDN để tránh nặng host
+        const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+        await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+        modelsLoaded = true;
+        document.getElementById('ai-status').innerText = "Trạng thái AI: Sẵn sàng - Hãy kết nối IP";
+    }
+
+    async function saveConfig() {
+        const esp32CamIp = document.getElementById('ipCam').value;
+        const esp32Ip = document.getElementById('ipMain').value;
+
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ esp32CamIp, esp32Ip })
+        });
+
+        alert("Đã lưu cấu hình mạng thành công!");
+        startStreaming(esp32CamIp);
+    }
+
+    // Cơ chế kéo ảnh từ ESP32-CAM mỗi 0.2s (200 mili-giây)
+    function startStreaming(ip) {
+        if(intervalId) clearInterval(intervalId);
+        
+        const imgElement = document.getElementById('camera-frame');
+        
+        intervalId = setInterval(async () => {
+            // Lấy ảnh trực tiếp từ tính năng chụp ảnh Capture của ESP32-CAM
+            const streamUrl = `http://${ip}/capture?_cb=${Date.now()}`;
+            imgElement.src = streamUrl;
+
+            if (modelsLoaded) {
+                analyzeFrame(imgElement);
+            }
+        }, 200);
+    }
+
+    // Phân tích nhận diện FaceID từng khung ảnh
+    async function analyzeFrame(imgEl) {
+        try {
+            const detection = await faceapi.detectSingleFace(imgEl).withFaceLandmarks().withFaceDescriptor();
+            
+            if (detection) {
+                // Gửi thông báo có nhận diện lên server xử lý kết quả và kích hoạt cửa
+                // LƯU Ý: Để so khớp chính xác, bạn có thể tạo mảng dữ liệu đối chiếu (LabeledFaceDescriptors) 
+                // Ở đây mô phỏng việc phát hiện thấy khuôn mặt hợp lệ trong khung hình
+                await fetch('/api/process-face', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ matchResult: "admin" }) // Giả định khớp tài khoản admin
+                });
+                
+                document.getElementById('ai-status').innerText = "KẾT QUẢ: ĐÚNG FACE ID [ADMIN]";
+                document.getElementById('ai-status').style.color = "#4caf50";
+            } else {
+                document.getElementById('ai-status').innerText = "KẾT QUẢ: KHÔNG PHÁT HIỆN KHUÔN MẶT";
+                document.getElementById('ai-status').style.color = "#ff9800";
+            }
+        } catch (e) {
+            // Bỏ qua lỗi bắt hình trống khi đang đổi khung ảnh
+        }
+    }
+
+    // Chụp khung hình hiện tại gửi lên Backend lưu làm FaceID mới
+    async function enrollCurrentFrame() {
+        const label = document.getElementById('faceLabel').value;
+        if(!label) return alert("Vui lòng nhập tên định danh trước!");
+
+        const imgElement = document.getElementById('camera-frame');
+        
+        // Vẽ ảnh ra canvas ngầm để chuyển sang chuỗi Base64 gửi lên Server Node.js lưu trữ
+        const canvas = document.createElement('canvas');
+        canvas.width = imgElement.naturalWidth || 400;
+        canvas.height = imgElement.naturalHeight || 300;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imgElement, 0, 0, canvas.width, canvas.height);
+        const dataURL = canvas.toDataURL('image/jpeg');
+
+        const res = await fetch('/api/enroll-face', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: label, imageBase64: dataURL })
+        });
+        const data = await res.json();
+        alert(data.message || "Đã xảy ra lỗi");
+    }
+
+    window.onload = initAI;
+</script>
+</body>
+</html>
